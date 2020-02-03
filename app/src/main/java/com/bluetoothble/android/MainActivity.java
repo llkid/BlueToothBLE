@@ -15,6 +15,7 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -38,6 +39,8 @@ import com.tbruyelle.rxpermissions2.RxPermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+
+import static android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY;
 
 
 public class MainActivity extends AppCompatActivity implements View.OnClickListener, AdapterView.OnItemClickListener {
@@ -72,6 +75,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private UUID indicate_UUID_service;
     private UUID indicate_UUID_chara;
     private String hex="7B46363941373237323532443741397D";
+    BluetoothLeScanner scanner;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -154,17 +158,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 });
     }
 
-    /**
-     * 停止扫描
-     * */
-    private void stopScanDevice() {
-        isScaning = false;
-        pbSearchBle.setVisibility(View.GONE);
-        BluetoothLeScanner scanner = mBluetoothAdapter.getBluetoothLeScanner();
-        scanner.stopScan(scanCallback);
-//        mBluetoothAdapter.stopLeScan(scanCallback);
-    }
-
     private void writeData() {
         BluetoothGattService service = mBluetoothGatt.getService(write_UUID_service);
         BluetoothGattCharacteristic characteristic = service.getCharacteristic(write_UUID_chara);
@@ -233,27 +226,68 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     }
 
     /**
+     * 停止扫描
+     * */
+    private void stopScanDevice() {
+        isScaning = false;
+        pbSearchBle.setVisibility(View.GONE);
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP) {
+            if (scanner == null) {
+                scanner = mBluetoothAdapter.getBluetoothLeScanner();
+            }
+            scanner.stopScan(scanCallback);
+        } else {
+            mBluetoothAdapter.stopLeScan(scanLeCallback);
+        }
+    }
+
+    /**
      * 开始扫描 10秒后自动停止
      * */
-    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void scanDevice() {
         tvSerBindStatus.setText("正在搜索...");
         isScaning = true;
         pbSearchBle.setVisibility(View.VISIBLE);
-        final BluetoothLeScanner scanner = mBluetoothAdapter.getBluetoothLeScanner();
-        scanner.startScan(scanCallback);
-//        mBluetoothAdapter.startLeScan(scanCallback);
-        Log.d(TAG, "execute here");
+        //创建ScanSettings的build对象用于设置参数
+        ScanSettings.Builder builder = new ScanSettings.Builder()
+                //设置高功耗模式
+                .setScanMode(SCAN_MODE_LOW_LATENCY);
+        //android 6.0添加设置回调类型、匹配模式等
+        if(Build.VERSION.SDK_INT >= 23) {
+            //定义回调类型
+            builder.setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES);
+            //设置蓝牙LE扫描滤波器硬件匹配的匹配模式
+            builder.setMatchMode(ScanSettings.MATCH_MODE_STICKY);
+        }
+        //芯片组支持批处理芯片上的扫描
+        if (mBluetoothAdapter.isOffloadedScanBatchingSupported()) {
+            //设置蓝牙LE扫描的报告延迟的时间（以毫秒为单位）
+            //设置为0以立即通知结果
+            builder.setReportDelay(0L);
+        }
+        builder.build();
+
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP) {
+            if (scanner == null) {
+                scanner = mBluetoothAdapter.getBluetoothLeScanner();
+            }
+            scanner.startScan(null, builder.build(),scanCallback);
+        } else {
+            mBluetoothAdapter.startLeScan(scanLeCallback);
+        }
         new Handler().postDelayed(new Runnable() {
             @Override
             public void run() {
                 //扫描结束
-                scanner.stopScan(scanCallback);
-//                mBluetoothAdapter.stopLeScan(scanCallback);
+                isScaning = false;
+                if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP) {
+                    scanner.stopScan(scanCallback);
+                } else {
+                    mBluetoothAdapter.stopLeScan(scanLeCallback);
+                }
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        isScaning = false;
                         pbSearchBle.setVisibility(View.GONE);
                         tvSerBindStatus.setText("搜索结束");
                     }
@@ -267,6 +301,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         public void onScanResult(int callbackType, ScanResult result) {
             super.onScanResult(callbackType, result);
             final BluetoothDevice bluetoothDevice = result.getDevice();
+            Log.d(TAG, "execute here");
             if (!mDatas.contains(bluetoothDevice)) {
                 mDatas.add(bluetoothDevice);
                 mRssis.add(result.getRssi());
@@ -292,17 +327,17 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         }
     };
 
-//    BluetoothAdapter.LeScanCallback scanCallback = new BluetoothAdapter.LeScanCallback() {
-//        @Override
-//        public void onLeScan(BluetoothDevice device, int rssi, byte[] scanRecord) {
-//            Log.d(TAG, "run: scanning...");
-//            if (!mDatas.contains(device)) {
-//                mDatas.add(device);
-//                mRssis.add(rssi);
-//                mAdapter.notifyDataSetChanged();
-//            }
-//        }
-//    };
+    BluetoothAdapter.LeScanCallback scanLeCallback = new BluetoothAdapter.LeScanCallback() {
+        @Override
+        public void onLeScan(BluetoothDevice device, int rssi, byte[] scanRecord) {
+            Log.d(TAG, "run: scanning...");
+            if (!mDatas.contains(device)) {
+                mDatas.add(device);
+                mRssis.add(rssi);
+                mAdapter.notifyDataSetChanged();
+            }
+        }
+    };
 
     private BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
 
