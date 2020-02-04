@@ -1,8 +1,11 @@
 package com.bluetoothble.android;
 
 
+import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
@@ -14,9 +17,15 @@ import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -31,13 +40,18 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.blankj.utilcode.util.ToastUtils;
 import com.bluetoothble.android.adapter.BleAdapter;
 import com.tbruyelle.rxpermissions2.RxPermissions;
 
+import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import static android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY;
@@ -61,9 +75,10 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private BleAdapter mAdapter;
     private BluetoothAdapter mBluetoothAdapter;
     private BluetoothManager mBluetoothManager;
-    private boolean isScaning=false;
-    private boolean isConnecting=false;
+    private boolean isScaning = false;
+    private boolean isConnecting = false;
     private BluetoothGatt mBluetoothGatt;
+    private BluetoothLeScanner scanner;
 
     //服务和特征值
     private UUID write_UUID_service;
@@ -74,8 +89,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private UUID notify_UUID_chara;
     private UUID indicate_UUID_service;
     private UUID indicate_UUID_chara;
-    private String hex="7B46363941373237323532443741397D";
-    BluetoothLeScanner scanner;
+    private String hex = "7B46363941373237323532443741397D";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -92,6 +106,51 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             Intent intent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
             startActivityForResult(intent, 0);
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        Log.i(TAG, "--------------->onStart()");
+        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+
+        this.registerReceiver(mRceiver, filter);
+        mBluetoothAdapter.startDiscovery();
+    }
+
+    private void SearchDevices(){
+        //判断是否正在搜索
+        if (mBluetoothAdapter.isDiscovering()) {
+            //如果正在搜索则取消搜索后再搜索
+            mBluetoothAdapter.cancelDiscovery();
+        }
+        // 启动设备发现服务,搜索到的蓝牙设备通过广播接受者返回
+        mBluetoothAdapter.startDiscovery();
+    }
+
+    private final BroadcastReceiver mRceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            BluetoothDevice device;
+            switch (action) {
+                case BluetoothAdapter.ACTION_DISCOVERY_FINISHED:
+                    Log.i(TAG, "ACTION_DISCOVERY_FINISHED: 搜索完毕");
+                    break;
+                case BluetoothDevice.ACTION_FOUND:
+                    Log.i(TAG, "ACTION_FOUND: 正在搜索设备...");
+                    device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    Log.i(TAG, device.getName());
+                    break;
+            }
+        }
+    };
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        this.unregisterReceiver(mRceiver);
     }
 
     private void initData() {
@@ -132,6 +191,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             case R.id.iv_ser_ble_status:
                 if (isScaning) {
                     tvSerBindStatus.setText("停止搜索");
+                    SearchDevices();
                     stopScanDevice();
                 } else {
                     checkPermissions();
@@ -157,6 +217,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                         }
                     }
                 });
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        switch (requestCode) {
+            case 0:
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+//                    scanDevice();
+                    scanner.startScan(scanCallback);
+                } else {
+                    ToastUtils.showLong("用户开启权限后才能使用");
+                }
+        }
     }
 
     private void writeData() {
@@ -204,25 +279,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     @Override
     public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-        switch (view.getId()) {
-            case R.id.ble_list_view:
-                if (isScaning) {
-                    stopScanDevice();
-                }
-                if (!isConnecting) {
-                    isConnecting = true;
-                    BluetoothDevice bluetoothDevice = mDatas.get(position);
-                    //连接设备
-                    tvSerBindStatus.setText("连接中");
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        mBluetoothGatt = bluetoothDevice.connectGatt(MainActivity.this, true, gattCallback, BluetoothDevice.TRANSPORT_LE);
-                    } else {
-                        mBluetoothGatt = bluetoothDevice.connectGatt(MainActivity.this, true, gattCallback);
-                    }
-                }
-                break;
-            default:
-                break;
+
+        if (isScaning) {
+            Log.i(TAG, "------------------------------------->");
+            stopScanDevice();
+        }
+        if (!isConnecting) {
+            isConnecting = true;
+            BluetoothDevice bluetoothDevice = mDatas.get(position);
+            //连接设备
+            tvSerBindStatus.setText("连接中");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                mBluetoothGatt = bluetoothDevice.connectGatt(MainActivity.this, true, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            } else {
+                mBluetoothGatt = bluetoothDevice.connectGatt(MainActivity.this, true, gattCallback);
+            }
         }
     }
 
@@ -236,25 +307,21 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             if (scanner == null) {
                 scanner = mBluetoothAdapter.getBluetoothLeScanner();
             }
+            Log.i(TAG, "stopScanDevice() execute");
             scanner.stopScan(scanCallback);
         } else {
             mBluetoothAdapter.stopLeScan(scanLeCallback);
         }
     }
 
-    /**
-     * 开始扫描 10秒后自动停止
-     * */
-    private void scanDevice() {
-        tvSerBindStatus.setText("正在搜索...");
-        isScaning = true;
-        pbSearchBle.setVisibility(View.VISIBLE);
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private  ScanSettings scanSettings() {
         //创建ScanSettings的build对象用于设置参数
         ScanSettings.Builder builder = new ScanSettings.Builder()
-                //设置高功耗模式
+                //设置低功耗模式
                 .setScanMode(SCAN_MODE_LOW_LATENCY);
         //android 6.0添加设置回调类型、匹配模式等
-        if(Build.VERSION.SDK_INT >= 23) {
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             //定义回调类型
             builder.setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES);
             //设置蓝牙LE扫描滤波器硬件匹配的匹配模式
@@ -266,21 +333,32 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             //设置为0以立即通知结果
             builder.setReportDelay(0L);
         }
-        builder.build();
+        return builder.build();
+    }
 
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP) {
+    /**
+     * 开始扫描 10秒后自动停止
+     * */
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private void scanDevice() {
+        tvSerBindStatus.setText("正在搜索...");
+        isScaning = true;
+        pbSearchBle.setVisibility(View.VISIBLE);
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
             if (scanner == null) {
                 scanner = mBluetoothAdapter.getBluetoothLeScanner();
+                Log.d(TAG, "无Scanner -----> " + scanner);
             }
-            scanner.startScan(null, builder.build(),scanCallback);
+            Log.d(TAG, "执行扫描 > 6.0 " + scanner);
+            scanner.startScan(null, scanSettings(), scanCallback);
         } else {
+            Log.d(TAG, "执行扫描 < 6.0");
             mBluetoothAdapter.startLeScan(scanLeCallback);
         }
         new Handler().postDelayed(new Runnable() {
             @Override
             public void run() {
                 //扫描结束
-                isScaning = false;
                 if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP) {
                     scanner.stopScan(scanCallback);
                 } else {
@@ -289,6 +367,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
+                        Log.i(TAG, "---------------------> isScaning = false");
+                        isScaning = false;
                         pbSearchBle.setVisibility(View.GONE);
                         tvSerBindStatus.setText("搜索结束");
                     }
@@ -297,12 +377,14 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         }, 10000); // 10 mec
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     ScanCallback scanCallback = new ScanCallback() {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             super.onScanResult(callbackType, result);
-            final BluetoothDevice bluetoothDevice = result.getDevice();
-            Log.d(TAG, "execute here");
+            BluetoothDevice bluetoothDevice = result.getDevice();
+            String name = bluetoothDevice.getName();
+            Log.i(TAG, "onScanResult execute -----> " + name);
             if (!mDatas.contains(bluetoothDevice)) {
                 mDatas.add(bluetoothDevice);
                 mRssis.add(result.getRssi());
@@ -313,6 +395,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         @Override
         public void onBatchScanResults(final List<ScanResult> results) {
             super.onBatchScanResults(results);
+            Log.d(TAG, "onBatchScanResults execute");
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
@@ -324,7 +407,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         @Override
         public void onScanFailed(int errorCode) {
             super.onScanFailed(errorCode);
-            Log.e(TAG, "扫描失败onScanFailed， errorCode==" + errorCode);
+            Log.d(TAG, "扫描失败onScanFailed， errorCode==" + errorCode);
         }
     };
 
